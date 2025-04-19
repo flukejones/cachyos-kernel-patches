@@ -606,6 +606,7 @@
 │   ├── 0007-fixes.patch
 │   ├── 0008-t2.patch
 │   ├── 0009-zstd.patch
+│   ├── 0010-zotac-zone.patch
 │   ├── all
 │   │   └── 0001-cachyos-base-all.patch
 │   ├── misc
