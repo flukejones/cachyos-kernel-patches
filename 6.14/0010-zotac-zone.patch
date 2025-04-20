@@ -1,7 +1,7 @@
-From ebb903f56d7e1a649e92dc5773f5d85a095d1e1b Mon Sep 17 00:00:00 2001
+From e6e898e64e99cfa5a24bb6ca7b58cc8ebfca0992 Mon Sep 17 00:00:00 2001
 From: Luke Jones <luke@ljones.dev>
 Date: Wed, 5 Mar 2025 17:40:54 +1300
-Subject: [PATCH 1/3] zotac-zone-hid: initial impl
+Subject: [PATCH 1/6] zotac-zone-hid: initial impl
 
 The full base driver for HID and platform is implemented.
 This now requires splitting in to base commits for upstreaming.
@@ -13,15 +13,15 @@ Signed-off-by: Luke Jones <luke@ljones.dev>
  drivers/hid/hid-ids.h                         |    4 +
  drivers/hid/zotac-zone-hid/Kconfig            |    8 +
  drivers/hid/zotac-zone-hid/Makefile           |    6 +
- .../zotac-zone-hid/zotac-zone-hid-config.c    | 2226 +++++++++++++++++
- .../hid/zotac-zone-hid/zotac-zone-hid-core.c  |  579 +++++
- .../hid/zotac-zone-hid/zotac-zone-hid-input.c |  514 ++++
+ .../zotac-zone-hid/zotac-zone-hid-config.c    | 2231 +++++++++++++++++
+ .../hid/zotac-zone-hid/zotac-zone-hid-core.c  |  597 +++++
+ .../hid/zotac-zone-hid/zotac-zone-hid-input.c |  522 ++++
  .../hid/zotac-zone-hid/zotac-zone-hid-rgb.c   |  730 ++++++
- drivers/hid/zotac-zone-hid/zotac-zone.h       |  208 ++
- drivers/platform/x86/Kconfig                  |    8 +
+ drivers/hid/zotac-zone-hid/zotac-zone.h       |  214 ++
+ drivers/platform/x86/Kconfig                  |   10 +
  drivers/platform/x86/Makefile                 |    2 +
- drivers/platform/x86/zotac-zone-platform.c    |  599 +++++
- 13 files changed, 4888 insertions(+)
+ drivers/platform/x86/zotac-zone-platform.c    | 1122 +++++++++
+ 13 files changed, 5450 insertions(+)
  create mode 100644 drivers/hid/zotac-zone-hid/Kconfig
  create mode 100644 drivers/hid/zotac-zone-hid/Makefile
  create mode 100644 drivers/hid/zotac-zone-hid/zotac-zone-hid-config.c
@@ -32,10 +32,10 @@ Signed-off-by: Luke Jones <luke@ljones.dev>
  create mode 100644 drivers/platform/x86/zotac-zone-platform.c
 
 diff --git a/drivers/hid/Kconfig b/drivers/hid/Kconfig
-index dfc245867a46..c514e23f92e5 100644
+index 4cfea399ebab..0eabb7ac217f 100644
 --- a/drivers/hid/Kconfig
 +++ b/drivers/hid/Kconfig
-@@ -1393,4 +1393,6 @@ endif # HID
+@@ -1407,4 +1407,6 @@ endif # HID
  
  source "drivers/hid/usbhid/Kconfig"
  
@@ -43,10 +43,10 @@ index dfc245867a46..c514e23f92e5 100644
 +
  endif # HID_SUPPORT
 diff --git a/drivers/hid/Makefile b/drivers/hid/Makefile
-index 0abfe51704a0..8f34a20a422c 100644
+index c7ecfbb3e228..bec6e6b1b018 100644
 --- a/drivers/hid/Makefile
 +++ b/drivers/hid/Makefile
-@@ -169,6 +169,8 @@ obj-$(CONFIG_INTEL_ISH_HID)	+= intel-ish-hid/
+@@ -170,6 +170,8 @@ obj-$(CONFIG_INTEL_ISH_HID)	+= intel-ish-hid/
  
  obj-$(CONFIG_AMD_SFH_HID)       += amd-sfh-hid/
  
@@ -56,10 +56,10 @@ index 0abfe51704a0..8f34a20a422c 100644
  
  obj-$(CONFIG_INTEL_THC_HID)     += intel-thc-hid/
 diff --git a/drivers/hid/hid-ids.h b/drivers/hid/hid-ids.h
-index 7e400624908e..9fb83ebd9224 100644
+index 288a2b864cc4..99e538701960 100644
 --- a/drivers/hid/hid-ids.h
 +++ b/drivers/hid/hid-ids.h
-@@ -1451,6 +1451,10 @@
+@@ -1488,6 +1488,10 @@
  #define USB_VENDOR_ID_ZYTRONIC		0x14c8
  #define USB_DEVICE_ID_ZYTRONIC_ZXY100	0x0005
  
@@ -98,10 +98,10 @@ index 000000000000..2f7053b981ac
 +obj-$(CONFIG_ZOTAC_ZONE_HID) := zotac-zone-hid.o
 diff --git a/drivers/hid/zotac-zone-hid/zotac-zone-hid-config.c b/drivers/hid/zotac-zone-hid/zotac-zone-hid-config.c
 new file mode 100644
-index 000000000000..b33e50f4f2e2
+index 000000000000..049615194392
 --- /dev/null
 +++ b/drivers/hid/zotac-zone-hid/zotac-zone-hid-config.c
-@@ -0,0 +1,2226 @@
+@@ -0,0 +1,2231 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/*
 +* HID driver for ZOTAC Gaming Zone Controller - RGB LED control
@@ -109,6 +109,8 @@ index 000000000000..b33e50f4f2e2
 +* Copyright (c) 2025 Luke D. Jones <luke@ljones.dev>
 +*/
 +
++#include "asm-generic/errno-base.h"
++#include "linux/kstrtox.h"
 +#include <linux/device.h>
 +#include <linux/hid.h>
 +#include <linux/module.h>
@@ -2003,21 +2005,24 @@ index 000000000000..b33e50f4f2e2
 +	if (!zotac.gamepad)
 +		return -ENODEV;
 +
-+	return sprintf(buf, "%d\n", zotac.gamepad->qam_mode ? 1 : 0);
++	return sprintf(buf, "%i\n", zotac.gamepad->qam_mode);
 +}
 +
 +static ssize_t qam_mode_store(struct device *dev, struct device_attribute *attr,
 +			      const char *buf, size_t count)
 +{
-+	bool value;
++	u8 value;
 +	int ret;
 +
 +	if (!zotac.gamepad)
 +		return -ENODEV;
 +
-+	ret = kstrtobool(buf, &value);
++	ret = kstrtou8(buf, 10, &value);
 +	if (ret)
 +		return ret;
++
++	if (value >= QAM_MODE_LENGTH)
++		return -EINVAL;
 +
 +	zotac.gamepad->qam_mode = value;
 +
@@ -2330,10 +2335,10 @@ index 000000000000..b33e50f4f2e2
 +}
 diff --git a/drivers/hid/zotac-zone-hid/zotac-zone-hid-core.c b/drivers/hid/zotac-zone-hid/zotac-zone-hid-core.c
 new file mode 100644
-index 000000000000..e171c9652cd9
+index 000000000000..6f80ea2f9aad
 --- /dev/null
 +++ b/drivers/hid/zotac-zone-hid/zotac-zone-hid-core.c
-@@ -0,0 +1,579 @@
+@@ -0,0 +1,597 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/*
 + * HID driver for ZOTAC Gaming Zone Controller - RGB LED control
@@ -2441,7 +2446,7 @@ index 000000000000..e171c9652cd9
 +				   int size)
 +{
 +	u32 pattern;
-+	bool qam_mode = true;
++	enum qam_mode qam_mode;
 +
 +	if (zotac->gamepad)
 +		qam_mode = zotac->gamepad->qam_mode;
@@ -2451,35 +2456,53 @@ index 000000000000..e171c9652cd9
 +
 +	pattern = (data[1] << 16) | (data[2] << 8) | data[3];
 +
-+	if (pattern == 0x09006c || pattern == 0x09006d || pattern == 0x080007
-+	    || pattern == 0x050063 ) {
++	if (pattern == 0x09006c || pattern == 0x09006d || pattern == 0x080007 || pattern == 0x050063) {
 +		switch (data[3]) {
 +		case 0x63:
-+			if (qam_mode)
-+				zotac_gamepad_send_button(
-+					zotac, (int[]){ BTN_MODE, BTN_X }, 2);
-+			else
++			switch (qam_mode) {
++			case QAM_MODE_KEYBOARD:
 +				data[3] = HID_USAGE_F19;
++				break;
++			case QAM_MODE_CUSTOM:
++				zotac_gamepad_send_button(zotac, (int[]){ BTN_TRIGGER_HAPPY6 }, 1);
++				break;
++			default:
++				zotac_gamepad_send_button(zotac, (int[]){ BTN_MODE, BTN_X }, 2);
++				break;
++			}
 +			break;
 +		case 0x6C:
-+			if (qam_mode)
-+				zotac_gamepad_send_button(zotac, (int[]){ BTN_MODE }, 1);
-+			else
++			switch (qam_mode) {
++			case QAM_MODE_KEYBOARD:
 +				data[3] = HID_USAGE_F16;
++				break;
++			default:
++				zotac_gamepad_send_button(zotac, (int[]){ BTN_MODE }, 1);
++				break;
++			}
 +			break;
 +		case 0x6D:
-+			if (qam_mode)
-+				zotac_gamepad_send_button(
-+					zotac, (int[]){ BTN_MODE, BTN_A }, 2);
-+			else
++			switch (qam_mode) {
++			case QAM_MODE_KEYBOARD:
 +				data[3] = HID_USAGE_F17;
++				break;
++			default:
++				zotac_gamepad_send_button(zotac, (int[]){ BTN_MODE, BTN_A }, 2);
++				break;
++			}
 +			break;
 +		case 0x07:
-+			if (qam_mode)
-+				zotac_gamepad_send_button(
-+					zotac, (int[]){ BTN_MODE, BTN_B }, 2);
-+			else
++			switch (qam_mode) {
++			case QAM_MODE_KEYBOARD:
 +				data[3] = HID_USAGE_F18;
++				break;
++			case QAM_MODE_CUSTOM:
++				zotac_gamepad_send_button(zotac, (int[]){ BTN_TRIGGER_HAPPY5 }, 1);
++				break;
++			default:
++				zotac_gamepad_send_button(zotac, (int[]){ BTN_MODE, BTN_B }, 2);
++				break;
++			}
 +			break;
 +		}
 +		if (qam_mode) {
@@ -2915,10 +2938,10 @@ index 000000000000..e171c9652cd9
 +MODULE_LICENSE("GPL");
 diff --git a/drivers/hid/zotac-zone-hid/zotac-zone-hid-input.c b/drivers/hid/zotac-zone-hid/zotac-zone-hid-input.c
 new file mode 100644
-index 000000000000..41e537db4654
+index 000000000000..571eec2df446
 --- /dev/null
 +++ b/drivers/hid/zotac-zone-hid/zotac-zone-hid-input.c
-@@ -0,0 +1,514 @@
+@@ -0,0 +1,522 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/*
 + * HID driver for ZOTAC Gaming Zone Controller - RGB LED control
@@ -2926,6 +2949,7 @@ index 000000000000..41e537db4654
 + * Copyright (c) 2025 Luke D. Jones <luke@ljones.dev>
 + */
 +
++#include "linux/input-event-codes.h"
 +#include <linux/device.h>
 +#include <linux/hid.h>
 +#include <linux/module.h>
@@ -3223,7 +3247,7 @@ index 000000000000..41e537db4654
 +		goto err_free_gamepad;
 +	}
 +
-+	gamepad->qam_mode = true;
++	gamepad->qam_mode = QAM_MODE_STEAM;
 +	gamepad->ep_in = ep_in;
 +	gamepad->ep_out = ep_out;
 +
@@ -3258,12 +3282,19 @@ index 000000000000..41e537db4654
 +	input_set_capability(input_dev, EV_KEY, BTN_THUMBR);
 +
 +	/* Allow the gamepad to emit these events for screenface buttons */
++	input_set_capability(input_dev, EV_KEY, KEY_F14);
 +	input_set_capability(input_dev, EV_KEY, KEY_F15);
 +	input_set_capability(input_dev, EV_KEY, KEY_F16);
 +	input_set_capability(input_dev, EV_KEY, KEY_F17);
 +	input_set_capability(input_dev, EV_KEY, KEY_F18);
 +	input_set_capability(input_dev, EV_KEY, KEY_F19);
-+	input_set_capability(input_dev, EV_KEY, KEY_F20);
++
++	input_set_capability(input_dev, EV_KEY, BTN_TRIGGER_HAPPY1);
++	input_set_capability(input_dev, EV_KEY, BTN_TRIGGER_HAPPY2);
++	input_set_capability(input_dev, EV_KEY, BTN_TRIGGER_HAPPY3);
++	input_set_capability(input_dev, EV_KEY, BTN_TRIGGER_HAPPY4);
++	input_set_capability(input_dev, EV_KEY, BTN_TRIGGER_HAPPY5);
++	input_set_capability(input_dev, EV_KEY, BTN_TRIGGER_HAPPY6);
 +
 +	pipe = usb_rcvintpipe(udev, gamepad->ep_in->bEndpointAddress);
 +	if (!(maxp = usb_maxpacket(udev, pipe))) {
@@ -4171,10 +4202,10 @@ index 000000000000..3f5b35132a9d
 +}
 diff --git a/drivers/hid/zotac-zone-hid/zotac-zone.h b/drivers/hid/zotac-zone-hid/zotac-zone.h
 new file mode 100644
-index 000000000000..10024daeeaea
+index 000000000000..31188cee80f8
 --- /dev/null
 +++ b/drivers/hid/zotac-zone-hid/zotac-zone.h
-@@ -0,0 +1,208 @@
+@@ -0,0 +1,214 @@
 +// SPDX-License-Identifier: GPL-2.0-or-later
 +/*
 + * HID driver for ZOTAC Gaming Zone Controller - RGB LED control
@@ -4244,6 +4275,13 @@ index 000000000000..10024daeeaea
 +		.store = _name##_store,                       \
 +	}
 +
++enum qam_mode {
++	QAM_MODE_KEYBOARD = 0,
++	QAM_MODE_STEAM,
++	QAM_MODE_CUSTOM,
++	QAM_MODE_LENGTH,
++};
++
 +struct zotac_gamepad {
 +	struct input_dev *dev; /* input device interface */
 +	struct zotac_device *zotac; /* back-pointer to parent zotac device */
@@ -4266,8 +4304,7 @@ index 000000000000..10024daeeaea
 +	unsigned int button_to_press;
 +	unsigned int button_to_press2;
 +	bool update_qam;
-+	/* True if Steam chords should be enabled */
-+	bool qam_mode;
++	enum qam_mode qam_mode;
 +};
 +
 +struct zotac_rgb_dev {
@@ -4384,15 +4421,17 @@ index 000000000000..10024daeeaea
 +
 +#endif /* __HID_ZOTAC_ZONE_H */
 diff --git a/drivers/platform/x86/Kconfig b/drivers/platform/x86/Kconfig
-index 7edab99d3ae9..6c09e3434169 100644
+index 7edab99d3ae9..103840183905 100644
 --- a/drivers/platform/x86/Kconfig
 +++ b/drivers/platform/x86/Kconfig
-@@ -1209,6 +1209,14 @@ config SEL3350_PLATFORM
+@@ -1209,6 +1209,16 @@ config SEL3350_PLATFORM
  	  To compile this driver as a module, choose M here: the module
  	  will be called sel3350-platform.
  
 +config ZOTAC_ZONE_PLATFORM
 +	tristate "Zotac Zone platform driver"
++	select FW_ATTR_CLASS
++	select ACPI_PLATFORM_PROFILE
 +	help
 +	  Support for fans and PPT on Zotac Zone devices.
 +
@@ -4414,10 +4453,10 @@ index fe3e7e7dede8..6ba0bf65069f 100644
 +obj-$(CONFIG_ZOTAC_ZONE_PLATFORM)		+= zotac-zone-platform.o
 diff --git a/drivers/platform/x86/zotac-zone-platform.c b/drivers/platform/x86/zotac-zone-platform.c
 new file mode 100644
-index 000000000000..4723dd5680d5
+index 000000000000..5f1123de4fb4
 --- /dev/null
 +++ b/drivers/platform/x86/zotac-zone-platform.c
-@@ -0,0 +1,599 @@
+@@ -0,0 +1,1122 @@
 +// SPDX-License-Identifier: GPL-2.0
 +/*
 + * Zotac Handheld Platform Driver
@@ -4440,6 +4479,10 @@ index 000000000000..4723dd5680d5
 +#include <linux/acpi.h>
 +#include <linux/ioport.h>
 +#include <linux/jiffies.h>
++#include <linux/platform_profile.h>
++#include <linux/wmi.h>
++
++#include "firmware_attributes_class.h"
 +
 +#define DRIVER_NAME "zotac_zone_platform"
 +
@@ -4452,33 +4495,99 @@ index 000000000000..4723dd5680d5
 +#define EC_FAN_SPEED_LOWER_ADDR 0x477
 +#define EC_CPU_TEMP_ADDR 0x462
 +
++/* Internal values */
 +#define EC_FAN_MODE_AUTO 0
 +#define EC_FAN_MODE_MANUAL 1
-+#define EC_FAN_MODE_CURVE 2
++/* Follow standard convention for userspace */
++#define PWM_ENABLE_OFF    0
++#define PWM_ENABLE_MANUAL 1
++#define PWM_ENABLE_AUTO   2  /* Automatic control (EC control) */
++#define PWM_ENABLE_CURVE  3  /* Custom curve control */
 +
-+#define EC_FAN_VALUE_MIN 0
-+#define EC_FAN_VALUE_MAX 255
++#define PWM_MIN 0
++#define PWM_MAX 255
 +
 +#define FAN_CURVE_POINTS 9 /* 9 points for 10-90°C like in the Zotac C# code */
 +
++/* AMD APU WMI DPTC constants */
++#define AMD_APU_WMI_METHODS_GUID "1f72b0f1-bfea-4472-9877-6e62937ab616"
++#define AMD_APU_WMI_DATA_GUID "05901221-d566-11d1-b2f0-00a0c9062910"
++
++/* DPTC command IDs */
++#define DPTC_STAPM_TIME_CONSTANT  1
++#define DPTC_SUSTAINED_POWER      5
++#define DPTC_FAST_POWER_1         6
++#define DPTC_FAST_POWER_2         7
++#define DPTC_SLOW_PPT_CONSTANT    8
++#define DPTC_P3T_LIMIT            0x32
++
++/* DPTC power limits in milliwatts */
++#define DPTC_MIN_POWER            5000
++#define DPTC_MAX_POWER            28000
++
++#define PPT_PL1_SPL_MIN		8
++#define PPT_PL1_SPL_MAX		28
++#define PPT_PL2_SPPT_MIN	8
++#define PPT_PL2_SPPT_MAX	28
++#define PPT_PL3_FPPT_MIN	8
++#define PPT_PL3_FPPT_MAX	28
++
++struct power_limits {
++	u8 ppt_pl1_spl;
++	u8 ppt_pl2_sppt;
++	u8 ppt_pl3_fppt;
++};
++
++static const struct power_limits ppt_quiet_profile = {
++	.ppt_pl1_spl = 5,
++	.ppt_pl2_sppt = 10,
++	.ppt_pl3_fppt = 15,
++};
++
++static const struct power_limits ppt_balanced_profile = {
++	.ppt_pl1_spl = 12,
++	.ppt_pl2_sppt = 19,
++	.ppt_pl3_fppt = 26,
++};
++
++static const struct power_limits ppt_performance_profile = {
++	.ppt_pl1_spl = 28,
++	.ppt_pl2_sppt = 35,
++	.ppt_pl3_fppt = 45,
++};
++
 +static struct timer_list fan_curve_timer;
 +
-+struct zotac_fan_data {
++struct zotac_platform_data {
 +	struct device *hwmon_dev;
 +	struct mutex update_lock;
 +	unsigned int fan_rpm;
-+	unsigned int fan_duty;
-+	unsigned int fan_mode;
++	unsigned int pwm;
++	unsigned int pwm_enable;
 +	unsigned int temp;
 +	unsigned long last_updated;
 +	bool valid;
 +	bool curve_enabled;
++
 +	/* Fan curve points */
 +	unsigned int curve_temp[FAN_CURVE_POINTS]; /* Temperature points */
 +	unsigned int curve_pwm[FAN_CURVE_POINTS]; /* PWM/duty points */
++
++	/* DPTC values */
++	struct device *ppdev;
++	struct device *fw_attr_dev;
++	struct kset *fw_attr_kset;
++
++	bool wmi_dptc_supported;
++	struct power_limits current_power_limits;
++	enum platform_profile_option current_profile;
++	/* TODO: hacking - must be removed later */
++	unsigned int ppt_pl1_stapm_time_const;
++	unsigned int ppt_pl2_sppt_time_const;
++	unsigned int ppt_platform_sppt;
 +};
 +
-+static struct platform_device *zotac_fan_device;
++static struct platform_device *zotac_platform_device;
 +static DEFINE_MUTEX(ec_mutex);
 +static struct resource ec_io_ports[] = {
 +	{
@@ -4556,19 +4665,49 @@ index 000000000000..4723dd5680d5
 +	return 0;
 +}
 +
-+static struct zotac_fan_data *zotac_fan_update_device(struct device *dev)
++static int send_dptc_cmd(u8 cmd_id, u32 value)
 +{
-+	struct zotac_fan_data *data = dev_get_drvdata(dev);
++	struct acpi_buffer input = { 0, NULL };
++	struct acpi_buffer output = { ACPI_ALLOCATE_BUFFER, NULL };
++	u8 *buffer;
++	acpi_status status;
++	int ret;
++
++	buffer = kzalloc(8, GFP_KERNEL);
++	if (!buffer)
++		return -ENOMEM;
++
++	buffer[0] = cmd_id;
++	*(u32 *)(buffer + 4) = value;
++
++	input.length = 8;
++	input.pointer = buffer;
++
++	status = wmi_evaluate_method(AMD_APU_WMI_METHODS_GUID, 0, 9,
++				&input, &output);
++
++	ret = ACPI_SUCCESS(status) ? 0 : -EIO;
++
++	kfree(buffer);
++	if (output.pointer)
++		kfree(output.pointer);
++
++	return ret;
++}
++
++static struct zotac_platform_data *zotac_platform_update_device(struct device *dev)
++{
++	struct zotac_platform_data *data = dev_get_drvdata(dev);
 +	unsigned long current_time = jiffies;
 +
 +	if (time_after(current_time, data->last_updated + HZ) || !data->valid) {
 +		mutex_lock(&data->update_lock);
 +
-+		data->fan_mode = ec_read_byte(EC_FAN_CTRL_ADDR);
-+		data->fan_duty = ec_read_byte(EC_FAN_DUTY_ADDR);
++		data->pwm_enable = ec_read_byte(EC_FAN_CTRL_ADDR);
++		data->pwm = ec_read_byte(EC_FAN_DUTY_ADDR);
 +
-+		u8 upper = ec_read_byte(EC_FAN_SPEED_UPPER_ADDR);
-+		u8 lower = ec_read_byte(EC_FAN_SPEED_LOWER_ADDR);
++		u32 upper = ec_read_byte(EC_FAN_SPEED_UPPER_ADDR);
++		u32 lower = ec_read_byte(EC_FAN_SPEED_LOWER_ADDR);
 +		data->fan_rpm = (upper << 8) | lower;
 +
 +		data->temp = ec_read_byte(EC_CPU_TEMP_ADDR);
@@ -4582,7 +4721,7 @@ index 000000000000..4723dd5680d5
 +	return data;
 +}
 +
-+/* Internal version of set_fan_duty that doesn't acquire the lock */
++/* Internal version doesn't acquire the lock */
 +static int set_fan_duty_internal(unsigned int duty_percent)
 +{
 +	u8 duty_val;
@@ -4591,14 +4730,14 @@ index 000000000000..4723dd5680d5
 +		return -EINVAL;
 +
 +	duty_val =
-+		(duty_percent * (EC_FAN_VALUE_MAX - EC_FAN_VALUE_MIN)) / 100 +
-+		EC_FAN_VALUE_MIN;
++		(duty_percent * (PWM_MAX - PWM_MIN)) / 100 +
++		PWM_MIN;
 +	return ec_write_byte(EC_FAN_DUTY_ADDR, duty_val);
 +}
 +
 +static void fan_curve_function(struct timer_list *t)
 +{
-+	struct zotac_fan_data *data = platform_get_drvdata(zotac_fan_device);
++	struct zotac_platform_data *data = platform_get_drvdata(zotac_platform_device);
 +	unsigned int current_temp;
 +	unsigned int pwm = 0;
 +	int i;
@@ -4651,80 +4790,97 @@ index 000000000000..4723dd5680d5
 +	mod_timer(&fan_curve_timer, jiffies + HZ);
 +}
 +
-+static int set_fan_duty(struct device *dev, u8 duty_percent)
-+{
-+	struct zotac_fan_data *data = dev_get_drvdata(dev);
-+	int err;
-+
-+	if (duty_percent > 100)
-+		return -EINVAL;
-+
-+	mutex_lock(&data->update_lock);
-+	err = set_fan_duty_internal(duty_percent);
-+	if (err == 0) {
-+		u8 duty_val =
-+			(duty_percent * (EC_FAN_VALUE_MAX - EC_FAN_VALUE_MIN)) /
-+				100 +
-+			EC_FAN_VALUE_MIN;
-+		data->fan_duty = duty_val;
-+	}
-+	mutex_unlock(&data->update_lock);
-+
-+	return err;
-+}
-+
-+static int set_fan_mode(struct device *dev, u8 mode)
-+{
-+	struct zotac_fan_data *data = dev_get_drvdata(dev);
-+	int err = 0;
-+
-+	if (mode == EC_FAN_MODE_CURVE) {
-+		data->curve_enabled = true;
-+
-+		err = ec_write_byte(EC_FAN_CTRL_ADDR, EC_FAN_MODE_MANUAL);
-+		if (err == 0) {
-+			data->fan_mode = EC_FAN_MODE_MANUAL;
-+			mod_timer(&fan_curve_timer, jiffies + HZ);
-+		}
-+	} else {
-+		if (data->curve_enabled) {
-+			data->curve_enabled = false;
-+			del_timer(&fan_curve_timer);
-+		}
-+
-+		/* Set normal auto/manual mode to EC */
-+		err = ec_write_byte(EC_FAN_CTRL_ADDR, mode);
-+		if (err == 0)
-+			data->fan_mode = mode;
-+	}
-+
-+	return err;
-+}
-+
 +/* Fan speed RPM */
 +static ssize_t fan1_input_show(struct device *dev,
 +			       struct device_attribute *attr, char *buf)
 +{
-+	struct zotac_fan_data *data = zotac_fan_update_device(dev);
++	struct zotac_platform_data *data = zotac_platform_update_device(dev);
 +	return sprintf(buf, "%u\n", data->fan_rpm);
 +}
 +static DEVICE_ATTR_RO(fan1_input);
 +
 +/* Fan mode */
-+static ssize_t fan1_mode_show(struct device *dev, struct device_attribute *attr,
-+			      char *buf)
-+{
-+	struct zotac_fan_data *data = zotac_fan_update_device(dev);
 +
-+	if (data->curve_enabled)
-+		return sprintf(buf, "%u\n", EC_FAN_MODE_CURVE);
-+	else
-+		return sprintf(buf, "%u\n", data->fan_mode);
++static int set_pwm_enable(struct device *dev, u8 mode)
++{
++	struct zotac_platform_data *data = dev_get_drvdata(dev);
++	int err = 0;
++	u8 ec_mode;
++
++	/* Convert from standard modes to EC-specific modes */
++	switch (mode) {
++	case PWM_ENABLE_OFF:
++		/* If supported by EC, turn fan off */
++		return -EOPNOTSUPP; /* If EC doesn't support OFF mode */
++	case PWM_ENABLE_MANUAL:
++		ec_mode =
++			EC_FAN_MODE_MANUAL; /* Assuming this is your actual EC value */
++		data->curve_enabled = false;
++		if (data->curve_enabled) {
++			data->curve_enabled = false;
++			del_timer(&fan_curve_timer);
++		}
++		break;
++	case PWM_ENABLE_AUTO:
++		ec_mode =
++			EC_FAN_MODE_AUTO; /* Assuming this is your actual EC value */
++		data->curve_enabled = false;
++		if (data->curve_enabled) {
++			data->curve_enabled = false;
++			del_timer(&fan_curve_timer);
++		}
++		break;
++	case PWM_ENABLE_CURVE:
++		ec_mode =
++			EC_FAN_MODE_MANUAL; /* We'll control manually but via the curve */
++		data->curve_enabled = true;
++		break;
++	default:
++		return -EINVAL;
++	}
++
++	/* Set mode to EC if needed */
++	if (!data->curve_enabled || mode != PWM_ENABLE_CURVE) {
++		err = ec_write_byte(EC_FAN_CTRL_ADDR, ec_mode);
++	}
++
++	if (err == 0) {
++		data->pwm_enable = mode;
++		if (mode == PWM_ENABLE_CURVE)
++			mod_timer(&fan_curve_timer, jiffies + HZ);
++	}
++
++	return err;
 +}
 +
-+static ssize_t fan1_mode_store(struct device *dev,
-+			       struct device_attribute *attr, const char *buf,
-+			       size_t count)
++/* Replace fan1_duty with pwm1 and scale to 0-255 */
++static int set_pwm(struct device *dev, u8 pwm_value)
++{
++	struct zotac_platform_data *data = dev_get_drvdata(dev);
++	int err;
++
++	if (pwm_value > PWM_MAX)
++		return -EINVAL;
++
++	mutex_lock(&data->update_lock);
++	err = ec_write_byte(EC_FAN_DUTY_ADDR, pwm_value);
++	if (err == 0)
++		data->pwm = pwm_value;
++	mutex_unlock(&data->update_lock);
++
++	return err;
++}
++
++static ssize_t pwm1_enable_show(struct device *dev,
++				struct device_attribute *attr, char *buf)
++{
++	struct zotac_platform_data *data = zotac_platform_update_device(dev);
++	return sprintf(buf, "%u\n", data->pwm_enable);
++}
++
++static ssize_t pwm1_enable_store(struct device *dev,
++				 struct device_attribute *attr, const char *buf,
++				 size_t count)
 +{
 +	unsigned long mode;
 +	int err;
@@ -4733,57 +4889,52 @@ index 000000000000..4723dd5680d5
 +	if (err)
 +		return err;
 +
-+	if (mode != EC_FAN_MODE_AUTO && mode != EC_FAN_MODE_MANUAL &&
-+	    mode != EC_FAN_MODE_CURVE)
++	if (mode > PWM_ENABLE_CURVE)
 +		return -EINVAL;
 +
-+	err = set_fan_mode(dev, mode);
++	err = set_pwm_enable(dev, mode);
 +	if (err)
 +		return err;
 +
 +	return count;
 +}
-+static DEVICE_ATTR_RW(fan1_mode);
++static DEVICE_ATTR_RW(pwm1_enable);
 +
 +/* Fan duty cycle (percent) */
-+static ssize_t fan1_duty_show(struct device *dev, struct device_attribute *attr,
-+			      char *buf)
++static ssize_t pwm1_show(struct device *dev, struct device_attribute *attr,
++			 char *buf)
 +{
-+	struct zotac_fan_data *data = zotac_fan_update_device(dev);
-+	unsigned int duty_percent =
-+		((data->fan_duty - EC_FAN_VALUE_MIN) * 100) /
-+		(EC_FAN_VALUE_MAX - EC_FAN_VALUE_MIN);
-+	return sprintf(buf, "%u\n", duty_percent);
++	struct zotac_platform_data *data = zotac_platform_update_device(dev);
++	return sprintf(buf, "%u\n", data->pwm);
 +}
 +
-+static ssize_t fan1_duty_store(struct device *dev,
-+			       struct device_attribute *attr, const char *buf,
-+			       size_t count)
++static ssize_t pwm1_store(struct device *dev, struct device_attribute *attr,
++			  const char *buf, size_t count)
 +{
-+	unsigned long duty_percent;
++	unsigned long pwm_value;
 +	int err;
 +
-+	err = kstrtoul(buf, 10, &duty_percent);
++	err = kstrtoul(buf, 10, &pwm_value);
 +	if (err)
 +		return err;
 +
-+	if (duty_percent > 100)
++	if (pwm_value > PWM_MAX)
 +		return -EINVAL;
 +
-+	err = set_fan_duty(dev, duty_percent);
++	err = set_pwm(dev, pwm_value);
 +	if (err)
 +		return err;
 +
 +	return count;
 +}
-+static DEVICE_ATTR_RW(fan1_duty);
++static DEVICE_ATTR_RW(pwm1);
 +
 +/* Macro to generate temperature point attributes */
 +#define CURVE_TEMP_ATTR(index)                                                \
 +	static ssize_t pwm1_auto_point##index##_temp_show(                    \
 +		struct device *dev, struct device_attribute *attr, char *buf) \
 +	{                                                                     \
-+		struct zotac_fan_data *data = dev_get_drvdata(dev);           \
++		struct zotac_platform_data *data = dev_get_drvdata(dev);      \
 +		return sprintf(buf, "%u\n", data->curve_temp[index - 1]);     \
 +	}                                                                     \
 +                                                                              \
@@ -4791,7 +4942,7 @@ index 000000000000..4723dd5680d5
 +		struct device *dev, struct device_attribute *attr,            \
 +		const char *buf, size_t count)                                \
 +	{                                                                     \
-+		struct zotac_fan_data *data = dev_get_drvdata(dev);           \
++		struct zotac_platform_data *data = dev_get_drvdata(dev);      \
 +		unsigned long temp;                                           \
 +		int err;                                                      \
 +                                                                              \
@@ -4812,7 +4963,7 @@ index 000000000000..4723dd5680d5
 +	static ssize_t pwm1_auto_point##index##_pwm_show(                     \
 +		struct device *dev, struct device_attribute *attr, char *buf) \
 +	{                                                                     \
-+		struct zotac_fan_data *data = dev_get_drvdata(dev);           \
++		struct zotac_platform_data *data = dev_get_drvdata(dev);      \
 +		return sprintf(buf, "%u\n", data->curve_pwm[index - 1]);      \
 +	}                                                                     \
 +                                                                              \
@@ -4820,7 +4971,7 @@ index 000000000000..4723dd5680d5
 +		struct device *dev, struct device_attribute *attr,            \
 +		const char *buf, size_t count)                                \
 +	{                                                                     \
-+		struct zotac_fan_data *data = dev_get_drvdata(dev);           \
++		struct zotac_platform_data *data = dev_get_drvdata(dev);      \
 +		unsigned long pwm;                                            \
 +		int err;                                                      \
 +                                                                              \
@@ -4863,16 +5014,16 @@ index 000000000000..4723dd5680d5
 +static ssize_t temp1_input_show(struct device *dev,
 +				struct device_attribute *attr, char *buf)
 +{
-+	struct zotac_fan_data *data = zotac_fan_update_device(dev);
++	struct zotac_platform_data *data = zotac_platform_update_device(dev);
 +	return sprintf(buf, "%u\n",
 +		       data->temp * 1000); /* Convert to milli-degrees */
 +}
 +static DEVICE_ATTR_RO(temp1_input);
 +
-+static struct attribute *zotac_fan_attrs[] = {
++static struct attribute *zotac_platform_hwmon_attrs[] = {
 +	&dev_attr_fan1_input.attr,
-+	&dev_attr_fan1_mode.attr,
-+	&dev_attr_fan1_duty.attr,
++	&dev_attr_pwm1_enable.attr,
++	&dev_attr_pwm1.attr,
 +	&dev_attr_temp1_input.attr,
 +	&dev_attr_pwm1_auto_point1_temp.attr,
 +	&dev_attr_pwm1_auto_point1_pwm.attr,
@@ -4895,19 +5046,399 @@ index 000000000000..4723dd5680d5
 +	NULL
 +};
 +
-+ATTRIBUTE_GROUPS(zotac_fan);
++/* DPTC attributes */
++#define DPTC_ATTR(display_name, cmd_id, min_val, max_val)                     \
++	static ssize_t display_name##_show(                                   \
++		struct device *dev, struct device_attribute *attr, char *buf) \
++	{                                                                     \
++		struct zotac_platform_data *data = dev_get_drvdata(dev);      \
++		return sprintf(buf, "%u\n", data->display_name);              \
++	}                                                                     \
++                                                                              \
++	static ssize_t display_name##_store(struct device *dev,               \
++					    struct device_attribute *attr,    \
++					    const char *buf, size_t count)    \
++	{                                                                     \
++		struct zotac_platform_data *data = dev_get_drvdata(dev);      \
++		unsigned long val;                                            \
++		int err;                                                      \
++                                                                              \
++		if (!data->wmi_dptc_supported)                                \
++			return -ENODEV;                                       \
++                                                                              \
++		err = kstrtoul(buf, 10, &val);                                \
++		if (err)                                                      \
++			return err;                                           \
++                                                                              \
++		if (val < min_val || val > max_val)                           \
++			return -EINVAL;                                       \
++                                                                              \
++		mutex_lock(&data->update_lock);                               \
++		err = send_dptc_cmd(cmd_id, val);                             \
++		if (err == 0)                                                 \
++			data->display_name = val;                             \
++		mutex_unlock(&data->update_lock);                             \
++                                                                              \
++		return err ? err : count;                                     \
++	}                                                                     \
++	static DEVICE_ATTR_RW(display_name)
 +
-+static int zotac_fan_probe(struct platform_device *pdev)
++/* Generate DPTC attributes with AMD-specific naming */
++DPTC_ATTR(ppt_pl1_stapm_time_const, DPTC_STAPM_TIME_CONSTANT, 1, 10000);
++DPTC_ATTR(ppt_pl2_sppt_time_const, DPTC_SLOW_PPT_CONSTANT, 1, 0xFF);
++DPTC_ATTR(ppt_platform_sppt, DPTC_P3T_LIMIT, DPTC_MIN_POWER, DPTC_MAX_POWER);
++
++static struct attribute *zotac_platform_dptc_attrs[] = {
++	&dev_attr_ppt_pl1_stapm_time_const.attr,
++	&dev_attr_ppt_pl2_sppt_time_const.attr,
++	&dev_attr_ppt_platform_sppt.attr,
++	NULL
++};
++
++static const struct attribute_group zotac_platform_hwmon_group = {
++	.attrs = zotac_platform_hwmon_attrs,
++};
++
++static const struct attribute_group zotac_platform_dptc_group = {
++	.name = "dptc",
++	.attrs = zotac_platform_dptc_attrs,
++};
++
++static const struct attribute_group *zotac_platform_hwmon_groups[] = {
++	&zotac_platform_hwmon_group,
++	NULL
++};
++
++/* Helper function to show a simple integer attribute */
++static ssize_t show_int_attr(struct device *dev,
++                             struct device_attribute *attr,
++                             char *buf, int value)
 +{
-+	struct zotac_fan_data *data;
-+	struct device *hwmon_dev;
++	return sprintf(buf, "%d\n", value);
++}
++
++/* Helper function to show a simple string attribute */
++static ssize_t show_string_attr(struct device *dev,
++                                struct device_attribute *attr,
++                                char *buf, const char *value)
++{
++	return sprintf(buf, "%s\n", value);
++}
++
++#define PPT_ATTR_RO(_name, _attr_name)                        \
++	struct device_attribute dev_attr_##_name = {          \
++		.attr = { .name = _attr_name, .mode = 0444 }, \
++		.show = _name##_show,                         \
++	}
++
++#define PPT_ATTR_RW(_name, _attr_name)                        \
++	struct device_attribute dev_attr_##_name = {          \
++		.attr = { .name = _attr_name, .mode = 0644 }, \
++		.show = _name##_show,                         \
++		.store = _name##_store,                       \
++	}
++
++/* Macro that creates a complete set of attributes for a power limit */
++#define DEFINE_POWER_LIMIT_ATTRS(attr_name, cmd_id, min, max, desc)           \
++	static ssize_t attr_name##_current_value_show(                        \
++		struct device *dev, struct device_attribute *attr, char *buf) \
++	{                                                                     \
++		struct zotac_platform_data *data =                            \
++			platform_get_drvdata(zotac_platform_device);          \
++		return show_int_attr(dev, attr, buf,                          \
++				     data->current_power_limits.attr_name);   \
++	}                                                                     \
++                                                                              \
++	static ssize_t attr_name##_current_value_store(                       \
++		struct device *dev, struct device_attribute *attr,            \
++		const char *buf, size_t count)                                \
++	{                                                                     \
++		struct zotac_platform_data *data =                            \
++			platform_get_drvdata(zotac_platform_device);          \
++		unsigned long val;                                            \
++		int err;                                                      \
++                                                                              \
++		if (!data->wmi_dptc_supported)                                \
++			return -ENODEV;                                       \
++                                                                              \
++		err = kstrtoul(buf, 10, &val);                                \
++		if (err)                                                      \
++			return err;                                           \
++                                                                              \
++		if (val < min || val > max)                                   \
++			return -EINVAL;                                       \
++                                                                              \
++		mutex_lock(&data->update_lock);                               \
++		data->current_power_limits.attr_name = val;                   \
++		data->current_profile = PLATFORM_PROFILE_CUSTOM;              \
++                                                                              \
++		err = send_dptc_cmd(cmd_id, val * 1000);                      \
++		mutex_unlock(&data->update_lock);                             \
++                                                                              \
++		return err ? err : count;                                     \
++	}                                                                     \
++                                                                              \
++	static ssize_t attr_name##_min_value_show(                            \
++		struct device *dev, struct device_attribute *attr, char *buf) \
++	{                                                                     \
++		return show_int_attr(dev, attr, buf, min);                    \
++	}                                                                     \
++                                                                              \
++	static ssize_t attr_name##_max_value_show(                            \
++		struct device *dev, struct device_attribute *attr, char *buf) \
++	{                                                                     \
++		return show_int_attr(dev, attr, buf, max);                    \
++	}                                                                     \
++                                                                              \
++	static ssize_t attr_name##_default_value_show(                        \
++		struct device *dev, struct device_attribute *attr, char *buf) \
++	{                                                                     \
++		struct zotac_platform_data *data =                            \
++			platform_get_drvdata(zotac_platform_device);          \
++		int default_value;                                            \
++                                                                              \
++		if (data->current_profile == PLATFORM_PROFILE_CUSTOM) {       \
++			default_value = ppt_balanced_profile.attr_name;       \
++		} else {                                                      \
++			const struct power_limits *profile;                   \
++                                                                              \
++			switch (data->current_profile) {                      \
++			case PLATFORM_PROFILE_LOW_POWER:                      \
++				profile = &ppt_quiet_profile;                 \
++				break;                                        \
++			case PLATFORM_PROFILE_BALANCED:                       \
++				profile = &ppt_balanced_profile;              \
++				break;                                        \
++			case PLATFORM_PROFILE_PERFORMANCE:                    \
++				profile = &ppt_performance_profile;           \
++				break;                                        \
++			default:                                              \
++				profile = &ppt_balanced_profile;              \
++				break;                                        \
++			}                                                     \
++                                                                              \
++			default_value = profile->attr_name;                   \
++		}                                                             \
++                                                                              \
++		return show_int_attr(dev, attr, buf, default_value);          \
++	}                                                                     \
++                                                                              \
++	static ssize_t attr_name##_scalar_increment_show(                     \
++		struct device *dev, struct device_attribute *attr, char *buf) \
++	{                                                                     \
++		return show_int_attr(dev, attr, buf, 1);                      \
++	}                                                                     \
++                                                                              \
++	static ssize_t attr_name##_display_name_show(                         \
++		struct device *dev, struct device_attribute *attr, char *buf) \
++	{                                                                     \
++		return show_string_attr(dev, attr, buf, desc);                \
++	}                                                                     \
++                                                                              \
++	static ssize_t attr_name##_type_show(                                 \
++		struct device *dev, struct device_attribute *attr, char *buf) \
++	{                                                                     \
++		return show_string_attr(dev, attr, buf, "int");               \
++	}                                                                     \
++                                                                              \
++	static PPT_ATTR_RW(attr_name##_current_value, "current_value");       \
++	static PPT_ATTR_RO(attr_name##_min_value, "min_value");               \
++	static PPT_ATTR_RO(attr_name##_max_value, "max_value");               \
++	static PPT_ATTR_RO(attr_name##_default_value, "default_value");       \
++	static PPT_ATTR_RO(attr_name##_scalar_increment, "scalar_increment"); \
++	static PPT_ATTR_RO(attr_name##_display_name, "display_name");         \
++	static PPT_ATTR_RO(attr_name##_type, "type");                         \
++                                                                              \
++	static struct attribute *attr_name##_attrs[] = {                      \
++		&dev_attr_##attr_name##_current_value.attr,                   \
++		&dev_attr_##attr_name##_min_value.attr,                       \
++		&dev_attr_##attr_name##_max_value.attr,                       \
++		&dev_attr_##attr_name##_default_value.attr,                   \
++		&dev_attr_##attr_name##_scalar_increment.attr,                \
++		&dev_attr_##attr_name##_display_name.attr,                    \
++		&dev_attr_##attr_name##_type.attr,                            \
++		NULL                                                          \
++	};                                                                    \
++                                                                              \
++	static const struct attribute_group attr_name##_attr_group = {        \
++		.name = #attr_name, .attrs = attr_name##_attrs                \
++	}
++
++/* Define the power limit attribute groups */
++DEFINE_POWER_LIMIT_ATTRS(ppt_pl1_spl, DPTC_SUSTAINED_POWER, PPT_PL1_SPL_MIN,
++			 PPT_PL1_SPL_MAX,
++			 "CPU Sustained Power Limit (PL1/SPL)");
++
++DEFINE_POWER_LIMIT_ATTRS(ppt_pl2_sppt, DPTC_FAST_POWER_1, PPT_PL2_SPPT_MIN,
++			 PPT_PL2_SPPT_MAX,
++			 "CPU Short Term Power Limit (PL2/SPPT)");
++
++DEFINE_POWER_LIMIT_ATTRS(ppt_pl3_fppt, DPTC_FAST_POWER_2, PPT_PL3_FPPT_MIN,
++			 PPT_PL3_FPPT_MAX, "CPU Fast Power Limit (PL3/FPPT)");
++
++/* Combine all power attribute groups */
++static const struct attribute_group *zotac_platform_power_groups[] = {
++	&ppt_pl1_spl_attr_group, &ppt_pl2_sppt_attr_group,
++	&ppt_pl3_fppt_attr_group, NULL
++};
++
++/* Helper function to create all power attribute groups */
++static int create_power_attributes(struct platform_device *pdev, struct zotac_platform_data *data)
++{
++	int i, ret = 0;
++
++	if (!data->wmi_dptc_supported)
++		return 0;
++
++	data->fw_attr_dev = device_create(&firmware_attributes_class, NULL, MKDEV(0, 0),
++						NULL, "%s", DRIVER_NAME);
++	if (IS_ERR(data->fw_attr_dev)) {
++		ret = PTR_ERR(data->fw_attr_dev);
++		goto fail_class_get;
++	}
++
++	data->fw_attr_kset = kset_create_and_add("attributes", NULL,
++						&data->fw_attr_dev->kobj);
++	if (!data->fw_attr_kset) {
++		ret = -ENOMEM;
++		goto err_destroy_kset;
++	}
++
++	for (i = 0; zotac_platform_power_groups[i]; i++) {
++		ret = sysfs_create_group(&data->fw_attr_kset->kobj,
++					 zotac_platform_power_groups[i]);
++		if (ret) {
++			dev_warn(&pdev->dev,
++				 "Failed to create power limit group %d\n", i);
++			goto error;
++		}
++	}
++
++	return 0;
++
++error:
++	while (--i >= 0)
++		sysfs_remove_group(&data->fw_attr_kset->kobj,
++				   zotac_platform_power_groups[i]);
++err_destroy_kset:
++	kset_unregister(data->fw_attr_kset);
++fail_class_get:
++	device_destroy(&firmware_attributes_class, MKDEV(0, 0));
++	return ret;
++}
++
++/* Helper function to remove all power attribute groups */
++static void remove_power_attributes(struct platform_device *pdev)
++{
++	struct zotac_platform_data *data = platform_get_drvdata(pdev);
 +	int i;
 +
-+	data = devm_kzalloc(&pdev->dev, sizeof(struct zotac_fan_data),
++	for (i = 0; zotac_platform_power_groups[i]; i++)
++		sysfs_remove_group(&data->fw_attr_kset->kobj,
++				   zotac_platform_power_groups[i]);
++
++	kset_unregister(data->fw_attr_kset);
++	device_destroy(&firmware_attributes_class, MKDEV(0, 0));
++}
++
++static int zotac_platform_profile_get(struct device *dev,
++				     enum platform_profile_option *profile)
++{
++	struct zotac_platform_data *data = dev_get_drvdata(dev);
++	*profile = data->current_profile;
++	return 0;
++}
++
++static int zotac_platform_profile_set(struct device *dev,
++				     enum platform_profile_option profile)
++{
++	struct zotac_platform_data *data = dev_get_drvdata(dev);
++	const struct power_limits *limits;
++	int ret = 0;
++
++	if (!data->wmi_dptc_supported)
++		return -ENODEV;
++
++	switch (profile) {
++	case PLATFORM_PROFILE_PERFORMANCE:
++		limits = &ppt_performance_profile;
++		break;
++	case PLATFORM_PROFILE_BALANCED:
++		limits = &ppt_balanced_profile;
++		break;
++	case PLATFORM_PROFILE_LOW_POWER:
++		limits = &ppt_quiet_profile;
++		break;
++	case PLATFORM_PROFILE_CUSTOM:
++		limits = &data->current_power_limits;
++		break;
++	default:
++		return -EOPNOTSUPP;
++	}
++
++	mutex_lock(&data->update_lock);
++	ret = send_dptc_cmd(DPTC_SUSTAINED_POWER, limits->ppt_pl1_spl * 1000);
++	if (ret == 0)
++		ret = send_dptc_cmd(DPTC_FAST_POWER_1, limits->ppt_pl2_sppt * 1000);
++	if (ret == 0)
++		ret = send_dptc_cmd(DPTC_FAST_POWER_2, limits->ppt_pl3_fppt * 1000);
++	if (ret == 0) {
++		data->current_profile = profile;
++		if (profile != PLATFORM_PROFILE_CUSTOM)
++			memcpy(&data->current_power_limits, limits, sizeof(struct power_limits));
++	}
++	mutex_unlock(&data->update_lock);
++
++	return ret;
++}
++
++static int zotac_platform_profile_probe(void *drvdata, unsigned long *choices)
++{
++	set_bit(PLATFORM_PROFILE_LOW_POWER, choices);
++	set_bit(PLATFORM_PROFILE_BALANCED, choices);
++	set_bit(PLATFORM_PROFILE_PERFORMANCE, choices);
++	set_bit(PLATFORM_PROFILE_CUSTOM, choices);
++	return 0;
++}
++
++static const struct platform_profile_ops zotac_platform_profile_ops = {
++	.probe = zotac_platform_profile_probe,
++	.profile_get = zotac_platform_profile_get,
++	.profile_set = zotac_platform_profile_set,
++};
++
++static int platform_profile_setup(struct zotac_platform_data *data)
++{
++	struct device *dev = &zotac_platform_device->dev;
++
++	if (!data->wmi_dptc_supported)
++		return 0;
++
++	data->ppdev = devm_platform_profile_register(dev, DRIVER_NAME, data,
++						     &zotac_platform_profile_ops);
++	if (IS_ERR(data->ppdev)) {
++		dev_err(dev, "Failed to register platform_profile device\n");
++		return PTR_ERR(data->ppdev);
++	}
++
++	/* Set default profile */
++	zotac_platform_profile_set(dev, PLATFORM_PROFILE_BALANCED);
++
++	return 0;
++}
++
++static int zotac_platform_probe(struct platform_device *pdev)
++{
++	struct zotac_platform_data *data;
++	struct device *hwmon_dev;
++	int i, ret;
++
++	data = devm_kzalloc(&pdev->dev, sizeof(struct zotac_platform_data),
 +			    GFP_KERNEL);
 +	if (!data)
 +		return -ENOMEM;
 +
++	data->wmi_dptc_supported = wmi_has_guid(AMD_APU_WMI_METHODS_GUID);
 +	data->valid = false;
 +	data->curve_enabled = false;
 +	mutex_init(&data->update_lock);
@@ -4921,30 +5452,61 @@ index 000000000000..4723dd5680d5
 +			data->curve_pwm[i] = 100;
 +	}
 +
-+	platform_set_drvdata(pdev, data);
++	data->current_profile = PLATFORM_PROFILE_BALANCED;
++	memcpy(&data->current_power_limits, &ppt_balanced_profile, sizeof(struct power_limits));
++	data->ppt_pl1_stapm_time_const = 300;
++	data->ppt_pl2_sppt_time_const = 0x11;
++	data->ppt_platform_sppt = 13000;
 +
 +	hwmon_dev = devm_hwmon_device_register_with_groups(
-+		&pdev->dev, "zotac_platform", data, zotac_fan_groups);
++		&pdev->dev, "zotac_platform", data, zotac_platform_hwmon_groups);
 +	if (IS_ERR(hwmon_dev))
 +		return PTR_ERR(hwmon_dev);
 +
 +	data->hwmon_dev = hwmon_dev;
 +
++	if (data->wmi_dptc_supported) {
++		ret = sysfs_create_group(&pdev->dev.kobj, &zotac_platform_dptc_group);
++		if (ret)
++			dev_warn(&pdev->dev, "Failed to create DPTC sysfs group\n");
++	}
++
++	platform_set_drvdata(pdev, data);
++
 +	timer_setup(&fan_curve_timer, fan_curve_function, 0);
 +
-+	zotac_fan_update_device(&pdev->dev);
++	zotac_platform_update_device(&pdev->dev);
++
++	ret = platform_profile_setup(data);
++	if (ret)
++		dev_warn(&pdev->dev, "Failed to setup platform profile\n");
++
++	ret = create_power_attributes(pdev, data);
++	if (ret)
++		dev_warn(&pdev->dev, "Failed to setup firmware attributes\n");
 +
 +	return 0;
 +}
 +
-+static struct platform_driver zotac_fan_driver = {
++static void zotac_platform_remove(struct platform_device *pdev)
++{
++	struct zotac_platform_data *data = platform_get_drvdata(pdev);
++
++	if (data && data->wmi_dptc_supported) {
++		sysfs_remove_group(&pdev->dev.kobj, &zotac_platform_dptc_group);
++		remove_power_attributes(pdev);
++	}
++}
++
++static struct platform_driver zotac_platform_driver = {
 +	.driver = {
 +		.name = DRIVER_NAME,
 +	},
-+	.probe = zotac_fan_probe,
++	.probe = zotac_platform_probe,
++	.remove = zotac_platform_remove,
 +};
 +
-+static const struct dmi_system_id zotac_fan_dmi_table[] __initconst = {
++static const struct dmi_system_id zotac_platform_dmi_table[] __initconst = {
 +    {
 +        .ident = "Zotac Gaming Handheld",
 +        .matches = {
@@ -4961,58 +5523,58 @@ index 000000000000..4723dd5680d5
 +    },
 +    {}  /* Terminate list */
 +};
-+MODULE_DEVICE_TABLE(dmi, zotac_fan_dmi_table);
++MODULE_DEVICE_TABLE(dmi, zotac_platform_dmi_table);
 +
-+static int __init zotac_fan_init(void)
++static int __init zotac_platform_init(void)
 +{
 +	int err;
 +
-+	if (!dmi_check_system(zotac_fan_dmi_table)) {
++	if (!dmi_check_system(zotac_platform_dmi_table)) {
 +		pr_info("No compatible Zotac hardware found\n");
 +		return -ENODEV;
 +	}
 +
 +	/* Request I/O regions */
-+	if (!request_region(EC_COMMAND_PORT, 1, "zotac_fan_ec") ||
-+	    !request_region(EC_DATA_PORT, 1, "zotac_fan_ec")) {
++	if (!request_region(EC_COMMAND_PORT, 1, "zotac_platform_ec") ||
++	    !request_region(EC_DATA_PORT, 1, "zotac_platform_ec")) {
 +		pr_err("Failed to request EC I/O ports\n");
 +		err = -EBUSY;
 +		goto err_release;
 +	}
 +
-+	zotac_fan_device = platform_device_register_simple(
++	zotac_platform_device = platform_device_register_simple(
 +		DRIVER_NAME, -1, ec_io_ports, ARRAY_SIZE(ec_io_ports));
-+	if (IS_ERR(zotac_fan_device)) {
-+		err = PTR_ERR(zotac_fan_device);
++	if (IS_ERR(zotac_platform_device)) {
++		err = PTR_ERR(zotac_platform_device);
 +		goto err_release;
 +	}
 +
-+	err = platform_driver_register(&zotac_fan_driver);
++	err = platform_driver_register(&zotac_platform_driver);
 +	if (err)
 +		goto err_device_unregister;
 +
 +	return 0;
 +
 +err_device_unregister:
-+	platform_device_unregister(zotac_fan_device);
++	platform_device_unregister(zotac_platform_device);
 +err_release:
 +	release_region(EC_COMMAND_PORT, 1);
 +	release_region(EC_DATA_PORT, 1);
 +	return err;
 +}
 +
-+static void __exit zotac_fan_exit(void)
++static void __exit zotac_platform_exit(void)
 +{
 +	del_timer_sync(&fan_curve_timer);
 +
-+	platform_driver_unregister(&zotac_fan_driver);
-+	platform_device_unregister(zotac_fan_device);
++	platform_driver_unregister(&zotac_platform_driver);
++	platform_device_unregister(zotac_platform_device);
 +	release_region(EC_COMMAND_PORT, 1);
 +	release_region(EC_DATA_PORT, 1);
 +}
 +
-+module_init(zotac_fan_init);
-+module_exit(zotac_fan_exit);
++module_init(zotac_platform_init);
++module_exit(zotac_platform_exit);
 +
 +MODULE_AUTHOR("Luke D. Jones");
 +MODULE_DESCRIPTION("Zotac Handheld Platform Driver");
@@ -5021,10 +5583,10 @@ index 000000000000..4723dd5680d5
 2.49.0
 
 
-From 7a1270f762e321deb53009c8d2382b8637ba07bf Mon Sep 17 00:00:00 2001
+From 64f9f10355a25eb72d8fbfc07b13d4e1ec6c8e64 Mon Sep 17 00:00:00 2001
 From: Luke Jones <luke@ljones.dev>
 Date: Mon, 31 Mar 2025 19:54:24 +1300
-Subject: [PATCH 2/3] xpad: gate the zotac-zone PID behind #if
+Subject: [PATCH 2/6] xpad: gate the zotac-zone PID behind #if
  !IS_REACHABLE(CONFIG_ZOTAC_ZONE_HID)
 
 Signed-off-by: Luke Jones <luke@ljones.dev>
@@ -5060,23 +5622,23 @@ index c33e6f33265b..7864f1f932f4 100644
 2.49.0
 
 
-From 215caf7ae0705740bcab111658834ba30fb244b2 Mon Sep 17 00:00:00 2001
+From a4b2c81a9da6280871b97274fa045b529d30cb20 Mon Sep 17 00:00:00 2001
 From: Luke Jones <luke@ljones.dev>
 Date: Sat, 12 Apr 2025 14:20:08 +1200
-Subject: [PATCH 3/3] tmp: apply zotac screen quirk
+Subject: [PATCH 3/6] tmp: apply zotac screen quirk
 
 ---
  drivers/gpu/drm/drm_panel_orientation_quirks.c | 6 ++++++
  1 file changed, 6 insertions(+)
 
 diff --git a/drivers/gpu/drm/drm_panel_orientation_quirks.c b/drivers/gpu/drm/drm_panel_orientation_quirks.c
-index 4a73821b81f6..f175e826071f 100644
+index c554ad8f246b..858f114cd3b5 100644
 --- a/drivers/gpu/drm/drm_panel_orientation_quirks.c
 +++ b/drivers/gpu/drm/drm_panel_orientation_quirks.c
-@@ -443,6 +443,12 @@ static const struct dmi_system_id orientation_data[] = {
+@@ -485,6 +485,12 @@ static const struct dmi_system_id orientation_data[] = {
  		  DMI_EXACT_MATCH(DMI_PRODUCT_NAME, "ONE XPLAYER"),
  		},
- 		.driver_data = (void *)&lcd1600x2560_leftside_up,
+ 		.driver_data = (void *)&lcd1200x1920_leftside_up,
 +	}, {	/* Zotac Gaming Zone (OLED) */
 +		.matches = {
 +		  DMI_EXACT_MATCH(DMI_SYS_VENDOR, "ZOTAC"),
@@ -5086,6 +5648,316 @@ index 4a73821b81f6..f175e826071f 100644
  	}, {	/* OrangePi Neo */
  		.matches = {
  		  DMI_EXACT_MATCH(DMI_SYS_VENDOR, "OrangePi"),
+-- 
+2.49.0
+
+
+From d0e848296ead941c2926499b153552a4b902ecf3 Mon Sep 17 00:00:00 2001
+From: Luke Jones <luke@ljones.dev>
+Date: Sun, 27 Apr 2025 09:15:16 +0000
+Subject: [PATCH 4/6] TEMPORARY: terrible hack for zotac screen while debugging
+
+---
+ .../link/protocols/link_edp_panel_control.c   | 28 +++++++++++++++++--
+ 1 file changed, 26 insertions(+), 2 deletions(-)
+
+diff --git a/drivers/gpu/drm/amd/display/dc/link/protocols/link_edp_panel_control.c b/drivers/gpu/drm/amd/display/dc/link/protocols/link_edp_panel_control.c
+index e0e3bb865359..b1b7b828b292 100644
+--- a/drivers/gpu/drm/amd/display/dc/link/protocols/link_edp_panel_control.c
++++ b/drivers/gpu/drm/amd/display/dc/link/protocols/link_edp_panel_control.c
+@@ -28,6 +28,8 @@
+  * as PSR and ABM and it also manages specs defined eDP panel power sequences.
+  */
+ 
++ #include <linux/dmi.h>
++
+ #include "link_edp_panel_control.h"
+ #include "link_dpcd.h"
+ #include "link_dp_capability.h"
+@@ -152,6 +154,16 @@ enum dp_panel_mode dp_get_panel_mode(struct dc_link *link)
+ 	return DP_PANEL_MODE_DEFAULT;
+ }
+ 
++static const struct dmi_system_id hack_backlight_quirks[] = {
++	{
++		.matches = {
++			DMI_MATCH(DMI_PRODUCT_NAME, "ZOTAC GAMING ZONE"),
++		},
++		.driver_data = NULL,
++	},
++	{ }
++};
++
+ bool edp_set_backlight_level_nits(struct dc_link *link,
+ 		bool isHDR,
+ 		uint32_t backlight_millinits,
+@@ -189,17 +201,29 @@ bool edp_set_backlight_level_nits(struct dc_link *link,
+ 			return false;
+ 	} else if (link->backlight_control_type == BACKLIGHT_CONTROL_AMD_AUX) {
+ 		struct dpcd_source_backlight_set dpcd_backlight_set;
++		uint8_t bl_bytes[sizeof(struct dpcd_source_backlight_set)];
+ 		*(uint32_t *)&dpcd_backlight_set.backlight_level_millinits = backlight_millinits;
+ 		*(uint16_t *)&dpcd_backlight_set.backlight_transition_time_ms = (uint16_t)transition_time_in_ms;
+ 
++		memcpy(bl_bytes, &dpcd_backlight_set, sizeof(bl_bytes));
++
+ 		uint8_t backlight_control = isHDR ? 1 : 0;
+ 		// OLEDs have no PWM, they can only use AUX
+ 		if (link->dpcd_sink_ext_caps.bits.oled == 1)
+ 			backlight_control = 1;
+ 
++		if (dmi_check_system(hack_backlight_quirks)) {
++			if (backlight_millinits < 5000) {
++				*(uint32_t *)&dpcd_backlight_set.backlight_level_millinits = 5000;
++				memcpy(bl_bytes, &dpcd_backlight_set, sizeof(bl_bytes));
++			}
++
++			if (!bl_bytes[0])
++				bl_bytes[0] = 0xF;
++		}
++
+ 		if (core_link_write_dpcd(link, DP_SOURCE_BACKLIGHT_LEVEL,
+-			(uint8_t *)(&dpcd_backlight_set),
+-			sizeof(dpcd_backlight_set)) != DC_OK)
++			bl_bytes, sizeof(bl_bytes)) != DC_OK)
+ 			return false;
+ 
+ 		if (core_link_write_dpcd(link, DP_SOURCE_BACKLIGHT_CONTROL,
+-- 
+2.49.0
+
+
+From 8b5c5e8673b34616a55c881d89f71aad63992de9 Mon Sep 17 00:00:00 2001
+From: Luke Jones <luke@ljones.dev>
+Date: Mon, 5 May 2025 19:33:01 +1200
+Subject: [PATCH 5/6] zotac: shift rgb controls to led class sysfs
+
+---
+ .../hid/zotac-zone-hid/zotac-zone-hid-rgb.c   | 59 ++++++++-----------
+ 1 file changed, 25 insertions(+), 34 deletions(-)
+
+diff --git a/drivers/hid/zotac-zone-hid/zotac-zone-hid-rgb.c b/drivers/hid/zotac-zone-hid/zotac-zone-hid-rgb.c
+index 3f5b35132a9d..86d5320abca5 100644
+--- a/drivers/hid/zotac-zone-hid/zotac-zone-hid-rgb.c
++++ b/drivers/hid/zotac-zone-hid/zotac-zone-hid-rgb.c
+@@ -309,12 +309,11 @@ static void zotac_rgb_restore_settings(struct zotac_rgb_dev *led_rgb,
+ static ssize_t rgb_effect_show(struct device *dev,
+ 			       struct device_attribute *attr, char *buf)
+ {
+-	struct zotac_device *zotac = dev_get_drvdata(dev);
+ 	int effect;
+ 
+-	if (!zotac || !zotac->cfg_data)
++	if (!zotac.cfg_data)
+ 		return -ENODEV;
+-	effect = zotac_send_get_byte(zotac, CMD_GET_RGB, SETTING_EFFECT, NULL,
++	effect = zotac_send_get_byte(&zotac, CMD_GET_RGB, SETTING_EFFECT, NULL,
+ 				     0);
+ 	if (effect < 0)
+ 		return effect;
+@@ -326,11 +325,10 @@ static ssize_t rgb_effect_store(struct device *dev,
+ 				struct device_attribute *attr, const char *buf,
+ 				size_t count)
+ {
+-	struct zotac_device *zotac = dev_get_drvdata(dev);
+ 	int effect, ret;
+ 	u8 effect_val;
+ 
+-	if (!zotac || !zotac->cfg_data)
++	if (!zotac.cfg_data)
+ 		return -ENODEV;
+ 
+ 	ret = kstrtoint(buf, 10, &effect);
+@@ -350,28 +348,26 @@ static ssize_t rgb_effect_store(struct device *dev,
+ 	}
+ 
+ 	effect_val = (u8)effect;
+-	ret = zotac_send_set_command(zotac, CMD_SET_RGB, SETTING_EFFECT,
++	ret = zotac_send_set_command(&zotac, CMD_SET_RGB, SETTING_EFFECT,
+ 				     &effect_val, 1);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	zotac->led_rgb_data.effect = effect_val;
++	zotac.led_rgb_data.effect = effect_val;
+ 
+ 	return count;
+ }
+-
+-static DEVICE_ATTR_RW(rgb_effect);
++static DEVICE_ATTR_RW_NAMED(rgb_effect, "effect");
+ 
+ static ssize_t rgb_speed_show(struct device *dev, struct device_attribute *attr,
+ 			      char *buf)
+ {
+-	struct zotac_device *zotac = dev_get_drvdata(dev);
+ 	int speed;
+ 
+-	if (!zotac || !zotac->cfg_data)
++	if (!zotac.cfg_data)
+ 		return -ENODEV;
+ 
+-	speed = zotac_send_get_byte(zotac, CMD_GET_RGB, SETTING_SPEED, NULL, 0);
++	speed = zotac_send_get_byte(&zotac, CMD_GET_RGB, SETTING_SPEED, NULL, 0);
+ 	if (speed < 0)
+ 		return speed;
+ 
+@@ -382,11 +378,10 @@ static ssize_t rgb_speed_store(struct device *dev,
+ 			       struct device_attribute *attr, const char *buf,
+ 			       size_t count)
+ {
+-	struct zotac_device *zotac = dev_get_drvdata(dev);
+ 	int speed, ret;
+ 	u8 speed_val;
+ 
+-	if (!zotac || !zotac->cfg_data)
++	if (!zotac.cfg_data)
+ 		return -ENODEV;
+ 
+ 	ret = kstrtoint(buf, 10, &speed);
+@@ -406,19 +401,18 @@ static ssize_t rgb_speed_store(struct device *dev,
+ 	}
+ 
+ 	speed_val = (u8)speed;
+-	ret = zotac_send_set_command(zotac, CMD_SET_RGB, SETTING_SPEED,
++	ret = zotac_send_set_command(&zotac, CMD_SET_RGB, SETTING_SPEED,
+ 				     &speed_val, 1);
+ 	if (ret < 0) {
+ 		dev_err(dev, "Failed to set RGB speed: %d\n", ret);
+ 		return ret;
+ 	}
+ 
+-	zotac->led_rgb_data.speed = speed_val;
++	zotac.led_rgb_data.speed = speed_val;
+ 
+ 	return count;
+ }
+-
+-static DEVICE_ATTR_RW(rgb_speed);
++static DEVICE_ATTR_RW_NAMED(rgb_speed, "speed");
+ 
+ static u8 brightness_level_to_value(unsigned int level)
+ {
+@@ -455,14 +449,13 @@ static unsigned int brightness_value_to_level(u8 value)
+ static ssize_t rgb_brightness_show(struct device *dev,
+ 				   struct device_attribute *attr, char *buf)
+ {
+-	struct zotac_device *zotac = dev_get_drvdata(dev);
+ 	int brightness = 0;
+ 	unsigned int level;
+ 
+-	if (!zotac || !zotac->cfg_data)
++	if (!zotac.cfg_data)
+ 		return -ENODEV;
+ 
+-	brightness = zotac_send_get_byte(zotac, CMD_GET_RGB, SETTING_BRIGHTNESS,
++	brightness = zotac_send_get_byte(&zotac, CMD_GET_RGB, SETTING_BRIGHTNESS,
+ 					 NULL, 0);
+ 	if (brightness < 0)
+ 		return brightness;
+@@ -476,11 +469,10 @@ static ssize_t rgb_brightness_store(struct device *dev,
+ 				    struct device_attribute *attr,
+ 				    const char *buf, size_t count)
+ {
+-	struct zotac_device *zotac = dev_get_drvdata(dev);
+ 	int level, ret;
+ 	u8 brightness;
+ 
+-	if (!zotac || !zotac->cfg_data)
++	if (!zotac.cfg_data)
+ 		return -ENODEV;
+ 
+ 	ret = kstrtoint(buf, 10, &level);
+@@ -492,20 +484,20 @@ static ssize_t rgb_brightness_store(struct device *dev,
+ 
+ 	brightness = brightness_level_to_value(level);
+ 
+-	ret = zotac_send_set_command(zotac, CMD_SET_RGB, SETTING_BRIGHTNESS,
++	ret = zotac_send_set_command(&zotac, CMD_SET_RGB, SETTING_BRIGHTNESS,
+ 				     &brightness, 1);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	ret = zotac_send_set_command(zotac, CMD_SAVE_CONFIG, 0, NULL, 0);
++	ret = zotac_send_set_command(&zotac, CMD_SAVE_CONFIG, 0, NULL, 0);
+ 	if (ret < 0)
+ 		return ret;
+ 
+-	zotac->led_rgb_data.brightness = brightness;
++	zotac.led_rgb_data.brightness = brightness;
+ 
+ 	return count;
+ }
+-static DEVICE_ATTR_RW(rgb_brightness);
++static DEVICE_ATTR_RW_NAMED(rgb_brightness, "brightness");
+ 
+ static struct attribute *zotac_rgb_attrs[] = { &dev_attr_rgb_effect.attr,
+ 					       &dev_attr_rgb_speed.attr,
+@@ -616,6 +608,11 @@ static int zotac_rgb_register_zone(struct hid_device *hdev,
+ 		return err;
+ 	}
+ 
++	err = sysfs_create_group(&led_cdev->dev->kobj, &zotac_rgb_attr_group);
++	if (err) {
++		return err;
++	}
++
+ 	return 0;
+ }
+ 
+@@ -661,7 +658,7 @@ void zotac_rgb_cleanup(struct zotac_device *zotac)
+ 	if (!zotac->led_rgb_dev)
+ 		return;
+ 
+-	sysfs_remove_group(&zotac->hdev->dev.kobj, &zotac_rgb_attr_group);
++	sysfs_remove_group(&zotac->led_rgb_dev->led_rgb_dev.led_cdev.dev->kobj, &zotac_rgb_attr_group);
+ 
+ 	for (i = 0; i < ZOTAC_RGB_ZONE_COUNT; i++) {
+ 		led_rgb = &zotac->led_rgb_dev[i];
+@@ -714,12 +711,6 @@ int zotac_rgb_init(struct zotac_device *zotac)
+ 
+ 	zotac->led_rgb_data.initialized = true;
+ 
+-	ret = sysfs_create_group(&zotac->hdev->dev.kobj, &zotac_rgb_attr_group);
+-	if (ret) {
+-		hid_err(zotac->hdev, "Failed to create RGB sysfs group: %d\n",
+-			ret);
+-	}
+-
+ 	for (i = 0; i < ZOTAC_RGB_ZONE_COUNT; i++) {
+ 		led_rgb = &zotac->led_rgb_dev[i];
+ 		led_rgb->update_rgb = true;
+-- 
+2.49.0
+
+
+From 9dadc852045ece932d77395237c2f3a68b7891b2 Mon Sep 17 00:00:00 2001
+From: Luke Jones <luke@ljones.dev>
+Date: Thu, 8 May 2025 16:35:59 +1200
+Subject: [PATCH 6/6] wtf, did the RGB order of LEDS change?
+
+Signed-off-by: Luke Jones <luke@ljones.dev>
+---
+ drivers/hid/zotac-zone-hid/zotac-zone-hid-rgb.c | 6 +++---
+ 1 file changed, 3 insertions(+), 3 deletions(-)
+
+diff --git a/drivers/hid/zotac-zone-hid/zotac-zone-hid-rgb.c b/drivers/hid/zotac-zone-hid/zotac-zone-hid-rgb.c
+index 86d5320abca5..9f133598d66a 100644
+--- a/drivers/hid/zotac-zone-hid/zotac-zone-hid-rgb.c
++++ b/drivers/hid/zotac-zone-hid/zotac-zone-hid-rgb.c
+@@ -198,9 +198,9 @@ static void zotac_rgb_do_work(struct work_struct *work)
+ 
+ 	for (j = 0; j < ZOTAC_RGB_LEDS_PER_ZONE; j++) {
+ 		led_index = zone_idx * ZOTAC_RGB_LEDS_PER_ZONE + j;
+-		zone_data[1 + (j * 3)] = led->red[led_index];
+-		zone_data[1 + (j * 3) + 1] = led->green[led_index];
+-		zone_data[1 + (j * 3) + 2] = led->blue[led_index];
++		zone_data[1 + (j * 3)] = led->green[led_index];
++		zone_data[1 + (j * 3) + 1] = led->blue[led_index];
++		zone_data[1 + (j * 3) + 2] = led->red[led_index];
+ 	}
+ 	spin_unlock_irqrestore(&led->lock, flags);
+ 
 -- 
 2.49.0
 
